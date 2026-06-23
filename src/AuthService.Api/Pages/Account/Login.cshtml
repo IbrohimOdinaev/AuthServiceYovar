@@ -1,0 +1,26 @@
+@page
+@model AuthService.Api.Pages.Account.LoginModel
+
+<h1>Sign in</h1>
+
+<form method="post">
+  <input type="hidden" asp-for="ReturnUrl" />
+  
+  <div>
+    <label asp-for="Email"></label>
+    <input asp-for="Email" autocomplete="username" />
+    <span asp-validation-for="Email"></span>
+  </div>
+
+  <div>
+    <label asp-for="Password"></label>
+    <input asp-for="Password" type="password" autocomplete="current-password" />
+    <span asp-validation-for="Password"></span>
+  </div>
+
+  <button type="submit">Sign in</button>
+</form>
+
+<div asp-validation-summary="ModelOnly"></div>
+
+

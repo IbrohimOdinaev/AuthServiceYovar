@@ -1,0 +1,115 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: authservice-staging-postgres
+    environment:
+      POSTGRES_DB: auth_service
+      POSTGRES_USER: auth_service_user
+      POSTGRES_PASSWORD: auth_service_password
+    ports:
+      - "5434:5432"
+    volumes:
+      - authservice_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U auth_service_user -d auth_service"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  migrate:
+    image: mcr.microsoft.com/dotnet/sdk:9.0
+    container_name: authservice-staging-migrate
+    working_dir: /src
+    volumes:
+      - .:/src
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ConnectionStrings__AuthDb: Host=postgres;Port=5432;Database=auth_service;Username=auth_service_user;Password=auth_service_password;Pooling=true;Minimum Pool Size=2;Maximum Pool Size=20
+      Cors__AllowedOrigins__0: https://localhost:3000
+      OpenIddict__SeedOnStartup: "false"
+      OpenIddict__Certificates__SigningCertificatePath: /run/secrets/authservice-signing.pfx
+      OpenIddict__Certificates__SigningCertificatePassword: local-compose-password
+      OpenIddict__Certificates__EncryptionCertificatePath: /run/secrets/authservice-encryption.pfx
+      OpenIddict__Certificates__EncryptionCertificatePassword: local-compose-password
+    secrets:
+      - source: authservice-signing.pfx
+        target: authservice-signing.pfx
+        mode: 0444
+      - source: authservice-encryption.pfx
+        target: authservice-encryption.pfx
+        mode: 0444
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      sh -c "dotnet tool restore &&
+             dotnet tool run dotnet-ef database update --project src/AuthService.Infrastructure --startup-project src/AuthService.Api"
+
+  authservice:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: authservice-staging-api
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__AuthDb: Host=postgres;Port=5432;Database=auth_service;Username=auth_service_user;Password=auth_service_password;Pooling=true;Minimum Pool Size=5;Maximum Pool Size=50
+      Cors__AllowedOrigins__0: https://localhost:3000
+      Cors__AllowedOrigins__1: https://localhost:5173
+      OpenIddict__SeedOnStartup: "true"
+      OpenIddict__Certificates__SigningCertificatePath: /run/secrets/authservice-signing.pfx
+      OpenIddict__Certificates__SigningCertificatePassword: local-compose-password
+      OpenIddict__Certificates__EncryptionCertificatePath: /run/secrets/authservice-encryption.pfx
+      OpenIddict__Certificates__EncryptionCertificatePassword: local-compose-password
+      Maintenance__Retention__Enabled: "true"
+      Maintenance__Retention__CleanupIntervalMinutes: "60"
+    secrets:
+      - source: authservice-signing.pfx
+        target: authservice-signing.pfx
+        mode: 0444
+      - source: authservice-encryption.pfx
+        target: authservice-encryption.pfx
+        mode: 0444
+    ports:
+      - "5058:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  demo-proxy:
+    image: nginx:1.27-alpine
+    container_name: authservice-staging-demo-proxy
+    depends_on:
+      authservice:
+        condition: service_healthy
+    ports:
+      - "8443:8443"
+    volumes:
+      - ./deploy/nginx/demo-proxy.conf:/etc/nginx/conf.d/default.conf:ro
+    secrets:
+      - source: demo-proxy.crt
+        target: demo-proxy.crt
+        mode: 0444
+      - source: demo-proxy.key
+        target: demo-proxy.key
+        mode: 0444
+
+secrets:
+  authservice-signing.pfx:
+    file: ./deploy/certs/authservice-signing.pfx
+  authservice-encryption.pfx:
+    file: ./deploy/certs/authservice-encryption.pfx
+  demo-proxy.crt:
+    file: ./deploy/certs/demo-proxy.crt
+  demo-proxy.key:
+    file: ./deploy/certs/demo-proxy.key
+
+volumes:
+  authservice_postgres_data:
