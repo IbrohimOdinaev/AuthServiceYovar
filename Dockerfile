@@ -11,14 +11,6 @@ COPY tests/AuthService.Tests/AuthService.Tests.csproj tests/AuthService.Tests/
 RUN dotnet restore AuthService.sln
 
 COPY . .
-
-RUN dotnet tool restore && \
-    dotnet tool run dotnet-ef migrations bundle \
-    --project src/AuthService.Infrastructure \
-    --startup-project src/AuthService.Api \
-    --configuration Release \
-    --output /app/migrate-authdb
-
 RUN dotnet publish src/AuthService.Api/AuthService.Api.csproj \
     --configuration Release \
     --output /app/publish \
@@ -31,7 +23,6 @@ ENV ASPNETCORE_URLS=http://+:8080
 EXPOSE 8080
 
 COPY --from=build /app/publish .
-COPY --from=build /app/migrate-authdb ./migrate-authdb
 
 USER $APP_UID
 ENTRYPOINT ["dotnet", "AuthService.Api.dll"]
