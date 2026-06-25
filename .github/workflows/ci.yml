@@ -14,6 +14,7 @@ permissions:
 
 env:
   IMAGE_NAME: ghcr.io/ibrohimodinaev/authserviceyovar
+  DOTNET_VERSION: 9.0.x
 
 jobs:
   build:
@@ -27,7 +28,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 9.0.x
+          dotnet-version: ${{ env.DOTNET_VERSION }}
 
       - name: Restore dependencies
         run: dotnet restore AuthService.sln
@@ -38,46 +39,98 @@ jobs:
       - name: Test
         run: dotnet test AuthService.sln --configuration Release --no-build
 
-  docker-build:
-    name: Docker build
+  docker:
+    name: Build and push docker image
     runs-on: ubuntu-latest
     needs: build
-
-    steps: 
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Build Docker image
-        run: docker build -t authservice:ci .
-
-  docker-push:
-    name: Docker push
-    runs-on: ubuntu-latest
-    needs: docker-build
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Login to GHCR
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build docker image
+      - name: Build image
         run: |
           docker build \
-            -t "${IMAGE_NAME}:${{ github.sha }}" \
             -t "${IMAGE_NAME}:latest" \
+            -t "${IMAGE_NAME}:${{ github.sha }}" \
             .
 
-      - name: Push Docker image
+      - name: Push image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
-          docker push "${IMAGE_NAME}:${{ github.sha}}"
+          docker push "${IMAGE_NAME}:${{ github.sha }}"
           docker push "${IMAGE_NAME}:latest"
 
+deploy:
+  name: Deploy to production
+  runs-on: ubuntu-latest
+  needs: docker
+  if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+  environment: production
 
+  steps:
+    - name: Deploy on server via SSH
+      uses: appleboy/ssh-actions@v1.0.3
+      with: 
+        host: ${{ secrets.SSH_HOST }}
+        username: ${{ secrets:SSH_USER }}
+        key: ${{ secrets.SSH_KEY }}
+        port: ${{ secrets.SSH_PORT }}
+        timeout: 10m
+        command_timeout: 20m
+        script_stop: true
+        script: |
+          set -euo pipefail
       
+          export IMAGE_NAME="${{ env.IMAGE_NAME }}"
+          export IMAGE_TAG="${{ github.sha }}"
+          export TARGET_IMAGE="${IMAGE_NAME}:${IMAGE_TAG}"
+          export DEPLOY_PATH="${{ secrets.DEPLOY_PATH }}"
+          export GHCR_TOKEN="${{ secrets.GHCR_TOKEN }}"
+          export LAST_IMAGE_FILE="${DEPLOY_PATH}/.deploy-last-image"
 
+          cd "$DEPLOY_PATH"
 
+          if [-f "$LAST_IMAGE_FILE" ]; then
+            export PREVIOUS_IMAGE="$(cat "$LAST_IMAGE_FILE")"
+          else
+            export PREVIOUS_IMAGE = ""
+          fi
 
-          
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+          git fetch --all -prune
+          git checkout main
+          git pull --ff-only origin main
+
+          if ! AUTHSERVICE_IMAGE="$TARGET_IMAGE" ./deploy/deploy-production.sh --pull-image; then
+            echo "Deployment failed, trying rollback..."
+            if [ -n "${PREVIOUS_IMAGE}" ]; then
+              AUTHSERVICE_IMAGE="$PREVIOUS_IMAGE" ./deploy/deploy-production.sh --pull-image
+            fi
+            exit 1
+          fi
+
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8080/health/ready >/dev/null; then
+              echo "$TARGET_IMAGE" > "$LAST_IMAGE_FILE"
+              echo "Deployment OK: $TARGET_IMAGE"
+              exit 0
+            fi
+            echo "Waiting for /health/ready... $i/30"
+            sleep 2
+          done
+
+          echo "Health check failed, rollback..."
+          if [ -n "${PREVIOUS_IMAGE}" ]; then
+            AUTHSERVICE_IMAGE="$PREVIOUS_IMAGE" ./deploy/deploy-production.sh --pull-image
+          fi
+          exit 1

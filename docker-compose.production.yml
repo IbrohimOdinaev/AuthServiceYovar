@@ -1,0 +1,61 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: authservice-postgres
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    environment:
+      POSTGRES_DB: auth_service
+      POSTGRES_USER: auth_service_user
+    volumes:
+    - authservice_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U auth_service_user -d auth_service"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+  migrate:
+    image: ${AUTHSERVICE_IMAGE:-ghcr.io/ibrohimodinaev/authserviceyovar:latest}
+    container_name: authservice-migrate
+    restart: "no"
+    env_file:
+      - .env.production
+    entrypoint: ["./migrate-authdb"]
+    secrets:
+      - source: authservice-signing.pfx
+        target: authservice-signing.pfx
+      - source: authservice-encryption.pfx
+        target: authservice-encryption.pfx
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  authservice:
+    image: ${AUTHSERVICE_IMAGE:-ghcr.io/ibrohimodinaev/authserviceyovar:latest}
+    container_name: authservice-api
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    ports:
+      - "8080:8080"
+    secrets:
+      - source: authservice-signing.pfx
+        target: authservice-signing.pfx
+      - source: authservice-encryption.pfx
+        target: authservice-encryption.pfx
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  authservice_postgres_data:
+
+secrets:
+  authservice-signing.pfx:
+    file: ./certs/authservice-signing.pfx
+  authservice-encryption.pfx:
+    file: ./certs/authservice-encryption.pfx
+      
