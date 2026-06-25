@@ -18,3 +18,4 @@ certs/
 *.suo
 
 authservice-demo.png
+*.binlog

@@ -69,68 +69,68 @@ jobs:
           docker push "${IMAGE_NAME}:${{ github.sha }}"
           docker push "${IMAGE_NAME}:latest"
 
-deploy:
-  name: Deploy to production
-  runs-on: ubuntu-latest
-  needs: docker
-  if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-  environment: production
+  deploy:
+    name: Deploy to production
+    runs-on: ubuntu-latest
+    needs: docker
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: production
 
-  steps:
-    - name: Deploy on server via SSH
-      uses: appleboy/ssh-actions@v1.0.3
-      with: 
-        host: ${{ secrets.SSH_HOST }}
-        username: ${{ secrets:SSH_USER }}
-        key: ${{ secrets.SSH_KEY }}
-        port: ${{ secrets.SSH_PORT }}
-        timeout: 10m
-        command_timeout: 20m
-        script_stop: true
-        script: |
-          set -euo pipefail
-      
-          export IMAGE_NAME="${{ env.IMAGE_NAME }}"
-          export IMAGE_TAG="${{ github.sha }}"
-          export TARGET_IMAGE="${IMAGE_NAME}:${IMAGE_TAG}"
-          export DEPLOY_PATH="${{ secrets.DEPLOY_PATH }}"
-          export GHCR_TOKEN="${{ secrets.GHCR_TOKEN }}"
-          export LAST_IMAGE_FILE="${DEPLOY_PATH}/.deploy-last-image"
+    steps:
+      - name: Deploy on server via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          timeout: 10m
+          command_timeout: 20m
+          script_stop: true
+          script: |
+            set -euo pipefail
 
-          cd "$DEPLOY_PATH"
+            export IMAGE_NAME="${{ env.IMAGE_NAME }}"
+            export IMAGE_TAG="${{ github.sha }}"
+            export TARGET_IMAGE="${IMAGE_NAME}:${IMAGE_TAG}"
+            export DEPLOY_PATH="${{ secrets.DEPLOY_PATH }}"
+            export GHCR_TOKEN="${{ secrets.GHCR_TOKEN }}"
+            export LAST_IMAGE_FILE="${DEPLOY_PATH}/.deploy-last-image"
 
-          if [-f "$LAST_IMAGE_FILE" ]; then
-            export PREVIOUS_IMAGE="$(cat "$LAST_IMAGE_FILE")"
-          else
-            export PREVIOUS_IMAGE = ""
-          fi
+            cd "$DEPLOY_PATH"
 
-          echo "$GHCR_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+            if [ -f "$LAST_IMAGE_FILE" ]; then
+              export PREVIOUS_IMAGE="$(cat "$LAST_IMAGE_FILE")"
+            else
+              export PREVIOUS_IMAGE=""
+            fi
 
-          git fetch --all -prune
-          git checkout main
-          git pull --ff-only origin main
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-          if ! AUTHSERVICE_IMAGE="$TARGET_IMAGE" ./deploy/deploy-production.sh --pull-image; then
-            echo "Deployment failed, trying rollback..."
+            git fetch --all --prune
+            git checkout main
+            git pull --ff-only origin main
+
+            if ! AUTHSERVICE_IMAGE="$TARGET_IMAGE" ./deploy/deploy-production.sh --pull-image; then
+              echo "Deployment failed, trying rollback..."
+              if [ -n "${PREVIOUS_IMAGE}" ]; then
+                AUTHSERVICE_IMAGE="$PREVIOUS_IMAGE" ./deploy/deploy-production.sh --pull-image
+              fi
+              exit 1
+            fi
+
+            for i in $(seq 1 30); do
+              if curl -fsS http://127.0.0.1:8080/health/ready >/dev/null; then
+                echo "$TARGET_IMAGE" > "$LAST_IMAGE_FILE"
+                echo "Deployment OK: $TARGET_IMAGE"
+                exit 0
+              fi
+              echo "Waiting for /health/ready... $i/30"
+              sleep 2
+            done
+
+            echo "Health check failed, rollback..."
             if [ -n "${PREVIOUS_IMAGE}" ]; then
               AUTHSERVICE_IMAGE="$PREVIOUS_IMAGE" ./deploy/deploy-production.sh --pull-image
             fi
             exit 1
-          fi
-
-          for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8080/health/ready >/dev/null; then
-              echo "$TARGET_IMAGE" > "$LAST_IMAGE_FILE"
-              echo "Deployment OK: $TARGET_IMAGE"
-              exit 0
-            fi
-            echo "Waiting for /health/ready... $i/30"
-            sleep 2
-          done
-
-          echo "Health check failed, rollback..."
-          if [ -n "${PREVIOUS_IMAGE}" ]; then
-            AUTHSERVICE_IMAGE="$PREVIOUS_IMAGE" ./deploy/deploy-production.sh --pull-image
-          fi
-          exit 1
