@@ -8,6 +8,13 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: ghcr.io/ibrohimodinaev/authserviceyovar
+
 jobs:
   build:
     name: Build and test
@@ -42,6 +49,33 @@ jobs:
 
       - name: Build Docker image
         run: docker build -t authservice:ci .
+
+  docker-push:
+    name: Docker push
+    run-on: ubuntu-latest
+    needs: docker-build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout repository
+        run: actions/checkout@v4
+
+      - name: Login to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build docker image
+        run: |
+          docker build \
+            -t "${IMAGE_NAME}:${{ github.sha }}" \
+            -t "${IMAGE_NAME}:latest" \
+            .
+
+      - name: Push Docker image
+        run: |
+          docker push "${IMAGE_NAME}:${{ github.sha}}"
+          docker push "${IMAGE_NAME}:latest"
+
+
       
 
 
